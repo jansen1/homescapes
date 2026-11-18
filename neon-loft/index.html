@@ -57,11 +57,11 @@ h1{margin:0;font-family:var(--display);font-weight:700;font-size:clamp(24px,3.6v
   <button id="sound" type="button">Sound: off</button>
   <button id="creditsBtn" type="button">Credits</button>
   <button type="button" onclick="location.href='../'">All homescapes</button>
-  <p id="note" class="note">Drag to look, <b>W A S D</b> to walk. In VR: left stick walks, right stick turns, <b>A/X</b> day/night, <b>B/Y</b> rain, or point at the floating panel.</p>
+  <p id="note" class="note">Drag to look, <b>W A S D</b> to walk. In VR: left stick walks; right stick forward aims a teleport (release to jump), sideways turns; <b>A/X</b> day/night, <b>B/Y</b> rain, or point at the floating panel.</p>
 </nav>
 <div id="credits" hidden><div>
   <p><b>Neon Loft</b>. City and apartment modelled, lit and rendered with Blender/Cycles; the lighting is baked.</p>
-  <p>Some furniture and props come from the Khronos glTF Sample Assets: Glam Velvet Sofa, Iridescence Lamp (Eric Chadwick / Wayfair, CC BY 4.0); Sheen Chair (Wayfair, CC0); Diffuse Transmission Plant (Rico Cilliers, Eric Chadwick / DGG, CC BY 4.0); Damaged Helmet (theblueturtle_, ctxwing, CC BY-NC 4.0); BoomBox (Microsoft, CC0); Teacup (Rico Cilliers, Poly Haven, Eric Chadwick, CC0). Everything else, including the billboards, is original.</p>
+  <p>Some furniture and props come from the Khronos glTF Sample Assets: Glam Velvet Sofa, Iridescence Lamp (Eric Chadwick / Wayfair, CC BY 4.0); Sheen Chair (Wayfair, CC0); Diffuse Transmission Plant (Rico Cilliers, Eric Chadwick / DGG, CC BY 4.0); Damaged Helmet (theblueturtle_, ctxwing, CC BY-NC 4.0); BoomBox (Microsoft, CC0); Teacup (Rico Cilliers, Poly Haven, Eric Chadwick, CC0). Everything else, including the billboards and the music, is original.</p>
   <button id="creditsClose" type="button">Close</button>
 </div></div>
 <div id="loading"><span id="loadText">Loading the city</span><div class="bar"><i id="loadBar"></i></div></div>
@@ -611,9 +611,39 @@ const controllers = [], raycaster = new THREE.Raycaster(), tmpM = new THREE.Matr
 for (let i = 0; i < 2; i++){ const c = renderer.xr.getController(i); rig.add(c);
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: '#7ff5ff', transparent: true, opacity: 0.7, toneMapped: false, fog: false }));
   line.scale.z = 3; line.visible = false; c.add(line); c.userData.line = line;
-  c.addEventListener('connected', e => { line.visible = e.data.targetRayMode === 'tracked-pointer'; }); c.addEventListener('disconnected', () => { line.visible = false; });
+  c.addEventListener('connected', e => { line.visible = e.data.targetRayMode === 'tracked-pointer'; c.userData.hand = e.data.handedness; }); c.addEventListener('disconnected', () => { line.visible = false; });
   c.addEventListener('selectstart', () => { const h = pick(c); if (h) h.object.userData.onSelect(); }); controllers.push(c); }
 function pick(c){ tmpM.identity().extractRotation(c.matrixWorld); raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld); raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM); return raycaster.intersectObjects(interactables, false)[0]; }
+
+/* ================= teleport: right stick forward shows an arc, release jumps ================= */
+const TP = { N: 26, aim: false, ok: false, hist: [], target: new THREE.Vector3(), p0: new THREE.Vector3(), dir: new THREE.Vector3(), cam: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
+{ const n = TP.N + 1; TP.pos = new Float32Array(n * 6); const idx = []; for (let i = 0; i < TP.N; i++){ const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(TP.pos, 3)); g.setIndex(idx);
+  const mk = o => new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: o, side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false, fog: false });
+  TP.mats = [mk(0.92), mk(0.95), mk(0.16)];
+  TP.arc = new THREE.Mesh(g, TP.mats[0]); TP.arc.frustumCulled = false; TP.arc.renderOrder = 60; TP.arc.visible = false; scene.add(TP.arc);
+  TP.ring = new THREE.Group(); TP.ring.rotation.x = -Math.PI / 2; TP.ring.visible = false; scene.add(TP.ring);
+  const r1 = new THREE.Mesh(new THREE.RingGeometry(0.21, 0.26, 56), TP.mats[1]), r2 = new THREE.Mesh(new THREE.CircleGeometry(0.21, 48), TP.mats[2]); r1.renderOrder = r2.renderOrder = 60; TP.ring.add(r1, r2); }
+// furniture you cannot land on: [x0, x1, z0, z1]
+const TP_BLOCK = [[1.7, 4.4, 1.35, 3.2], [3.95, 5, 0.1, 1.6], [3.15, 5, -2.55, -0.15], [-5, -3.95, -1.9, -0.8], [-4.7, -3.7, -3.1, -2.2], [3.9, 5, -3.4, -2.4],
+  [-3.95, -0.35, 1.7, 3.2], [-3.05, -1.35, 0.45, 1.55], [-4.7, -3.4, 0.35, 1.55], [-1.0, 0.3, 0.35, 1.55]];
+function tpUpdate(ctrl, defl, t){
+  TP.hist.push([t, defl]); while (t - TP.hist[0][0] > 0.2) TP.hist.shift(); let m = 0; for (const h of TP.hist) m = Math.max(m, h[1]);   // a quick release keeps the spot you had
+  const p0 = TP.p0, dir = TP.dir; ctrl.getWorldPosition(p0); ctrl.getWorldDirection(dir).negate(); dir.y = 0;
+  if (dir.lengthSq() < 0.02){ camera.getWorldDirection(dir); dir.y = 0; } dir.normalize();
+  const R = 0.7 + Math.pow(m, 1.25) * 7.3, tx = THREE.MathUtils.clamp(p0.x + dir.x * R, -4.5, 4.5), tz = THREE.MathUtils.clamp(p0.z + dir.z * R, -2.9, 3.9);
+  TP.ok = !TP_BLOCK.some(b => tx > b[0] && tx < b[1] && tz > b[2] && tz < b[3]); TP.target.set(tx, 0, tz);
+  const h = 0.1 + 0.11 * Math.hypot(tx - p0.x, tz - p0.z), cam = TP.cam, a = TP.a, b = TP.b, c = TP.c; camera.getWorldPosition(cam);
+  for (let i = 0; i <= TP.N; i++){ const s = i / TP.N; a.set(lerp(p0.x, tx, s), lerp(p0.y, 0.02, s) + 4 * h * s * (1 - s), lerp(p0.z, tz, s));
+    b.set(tx - p0.x, 0.02 - p0.y + 4 * h * (1 - 2 * s), tz - p0.z); c.subVectors(a, cam); b.cross(c).normalize().multiplyScalar(0.007 + 0.004 * s);
+    TP.pos.set([a.x - b.x, a.y - b.y, a.z - b.z, a.x + b.x, a.y + b.y, a.z + b.z], i * 6); }
+  TP.arc.geometry.attributes.position.needsUpdate = true; TP.mats.forEach(mt => mt.color.set(TP.ok ? '#ffffff' : '#ff4f6a'));
+  TP.ring.position.set(tx, 0.015, tz); TP.ring.scale.setScalar(TP.ok ? 1 : 0.7); TP.arc.visible = TP.ring.visible = true;
+}
+function tpEnd(jump, gp){ TP.arc.visible = TP.ring.visible = false; TP.aim = false; TP.hist.length = 0; if (!jump || !TP.ok) return;
+  camera.getWorldPosition(TP.cam); rig.position.x += TP.target.x - TP.cam.x; rig.position.z += TP.target.z - TP.cam.z;
+  try{ const hp = gp && gp.hapticActuators && gp.hapticActuators[0]; if (hp && hp.pulse) hp.pulse(0.45, 35); }catch(e){} }
+window.__tpTest = (defl, ang) => { const o = new THREE.Object3D(); o.position.set(0.25, 1.05, -0.3); o.rotation.y = ang; rig.add(o); o.updateMatrixWorld(true); tpUpdate(o, defl, 0); };
 
 /* ================= audio ================= */
 const Sound = { ctx: null,
@@ -628,25 +658,16 @@ const Sound = { ctx: null,
     this.rainG = g(0); loop(this.white).connect(bq('highpass', 500)).connect(bq('lowpass', 4800)).connect(this.rainG).connect(master);
     const gust = ctx.createOscillator(); gust.frequency.value = 0.06; const gg = g(0.05); gust.connect(gg).connect(this.rainG.gain); gust.start();
     this.patG = g(0); loop(this.white).connect(bq('bandpass', 2800, 1.5)).connect(this.patG).connect(master);
-    this.humG = g(0); loop(this.brown).connect(bq('lowpass', 170)).connect(this.humG).connect(glassF);
-    this.trafG = g(0); loop(this.white).connect(bq('bandpass', 600, 0.5)).connect(this.trafG).connect(glassF);
-    const tl = ctx.createOscillator(); tl.frequency.value = 0.08; const tlg = g(0.025); tl.connect(tlg).connect(this.trafG.gain); tl.start();
-    this.fanG = g(0); loop(this.white).connect(bq('bandpass', 420, 0.6)).connect(this.fanG).connect(master);
-    const flut = ctx.createOscillator(); flut.frequency.value = 1.4; const fg = g(0.005); flut.connect(fg).connect(this.fanG.gain); flut.start();
-    this.padG = g(0); const padF = bq('lowpass', 360, 2); padF.connect(this.padG).connect(master);
-    [55, 82.41, 110.6].forEach((f, i) => { const o = ctx.createOscillator(); o.type = i < 2 ? 'sawtooth' : 'triangle'; o.frequency.value = f; o.detune.value = (Math.random() - .5) * 12; const og = g(0.2); o.connect(og).connect(padF); o.start(); });
-    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.04; const lg = g(140); lfo.connect(lg).connect(padF.frequency); lfo.start();
-    this.apply(); this.events(); },
+    // lofi from the two speakers on the console (left channel on the speaker to your left as you face them), plus a little room level
+    const el = this.musicEl = new Audio(A + 'lofi.mp3'); el.loop = true; el.preload = 'auto';
+    const msrc = ctx.createMediaElementSource(el), split = ctx.createChannelSplitter(2); this.musG = g(0); msrc.connect(this.musG); this.musG.connect(split);
+    [[0, -0.03], [1, -1.47]].forEach(([ch, x]) => { const p = ctx.createPanner(); p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = 2.6; p.rolloffFactor = 1; p.maxDistance = 40;
+      if (p.positionX){ p.positionX.value = x; p.positionY.value = 0.92; p.positionZ.value = 4.36; } else p.setPosition(x, 0.92, 4.36); split.connect(p, ch); p.connect(master); });
+    this.musG.connect(g(0.2)).connect(master);
+    this.apply(); },
   apply(){ if (!this.ctx) return; const t = this.ctx.currentTime, on = state.sound ? 1 : 0, d = dayTarget() ? 1 : 0, r = state.rain ? 1 : 0;
     this.master.gain.setTargetAtTime(0.9 * on, t, 0.6); this.rainG.gain.setTargetAtTime(0.13 * r, t, 1.2); this.patG.gain.setTargetAtTime(0.04 * r, t, 1.2);
-    this.humG.gain.setTargetAtTime(d ? 0.4 : 0.3, t, 1.5); this.trafG.gain.setTargetAtTime(d ? 0.08 : 0.035, t, 1.5); this.fanG.gain.setTargetAtTime(0.016, t, 1); this.padG.gain.setTargetAtTime(d ? 0.006 : 0.02, t, 2); },
-  events(){ const next = () => { if (!this.ctx) return; if (state.sound && this.ctx.state === 'running'){ Math.random() < 0.45 ? this.siren() : this.whoosh(); } setTimeout(next, 10000 + Math.random() * 15000); }; setTimeout(next, 7000); },
-  siren(){ const c = this.ctx, t = c.currentTime, o = c.createOscillator(), l = c.createOscillator(), lg = c.createGain(), g = c.createGain(), p = c.createStereoPanner();
-    o.type = 'triangle'; o.frequency.value = 720; l.frequency.value = 0.6; lg.gain.value = 160; l.connect(lg).connect(o.frequency); p.pan.value = Math.random() * 1.6 - 0.8;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.009, t + 2.5); g.gain.linearRampToValueAtTime(0, t + 8); o.connect(g).connect(p).connect(this.glass); o.start(t); l.start(t); o.stop(t + 8.2); l.stop(t + 8.2); },
-  whoosh(){ const c = this.ctx, t = c.currentTime, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), p = c.createStereoPanner(); s.buffer = this.white; f.type = 'bandpass'; f.Q.value = 2; const dir = Math.random() < .5 ? -1 : 1;
-    f.frequency.setValueAtTime(300, t); f.frequency.linearRampToValueAtTime(900, t + 1.6); f.frequency.linearRampToValueAtTime(260, t + 3.4); p.pan.setValueAtTime(-dir, t); p.pan.linearRampToValueAtTime(dir, t + 3.4);
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.05, t + 1.6); g.gain.linearRampToValueAtTime(0, t + 3.4); s.connect(f).connect(g).connect(p).connect(this.glass); s.start(t); s.stop(t + 3.5); },
+    this.musG.gain.setTargetAtTime(0.75, t, 0.8); if (on) this.musicEl.play().catch(() => {}); else this.musicEl.pause(); },
   mover(kind){ if (!this.ctx || this.ctx.state !== 'running') return null; const c = this.ctx, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), p = c.createPanner(); const tr = kind === 'train';
     p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = tr ? 90 : 6; p.rolloffFactor = 1.1; s.buffer = tr ? this.brown : this.white; s.loop = true;
     f.type = tr ? 'lowpass' : 'bandpass'; f.frequency.value = tr ? 260 : 400; f.Q.value = 1; g.gain.value = 0;
@@ -719,7 +740,7 @@ renderer.setAnimationLoop(() => {
   dayMix += (targetDay - dayMix) * Math.min(1, dt * 1.1); if (Math.abs(targetDay - dayMix) < 0.002) dayMix = targetDay;
   rainMix += ((state.rain ? 1 : 0) - rainMix) * Math.min(1, dt * 0.9);
   applyMix(dayMix);
-  const xr = renderer.xr.isPresenting; panel.visible = xr;
+  const xr = renderer.xr.isPresenting; panel.visible = xr; if (!xr && TP.aim) tpEnd(false);
   U.uPx.value = xr ? 1000 : innerHeight * renderer.getPixelRatio() * 0.6;
   if (!xr){ camera.rotation.set(pitch, yaw, 0); const mx = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0), mz = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0); if (mx || mz) moveRig(mx * 1.6, mz * 1.6, dt); }
   if (fanHub) fanHub.rotation.y -= dt * 1.9;
@@ -744,7 +765,11 @@ renderer.setAnimationLoop(() => {
       const a = gp.buttons[4] && gp.buttons[4].pressed, b = gp.buttons[5] && gp.buttons[5].pressed; if (a && !pv.a) toggleMode(); if (b && !pv.b) toggleRain(); pv.a = a; pv.b = b;
       const ax = gp.axes.length >= 4 ? gp.axes[2] : 0, ay = gp.axes.length >= 4 ? gp.axes[3] : 0;
       if (src.handedness === 'left'){ if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) moveRig(ax * 1.5, ay * 1.5, dt); }
-      else if (src.handedness === 'right'){ if (Math.abs(ax) > 0.6 && snapReady){ snapReady = false; camera.getWorldPosition(tmpV); const ang = -Math.sign(ax) * Math.PI / 6; rig.position.sub(tmpV).applyAxisAngle(THREE.Object3D.DEFAULT_UP, ang).add(tmpV); rig.rotation.y += ang; } if (Math.abs(ax) < 0.3) snapReady = true; } }); }
+      else if (src.handedness === 'right'){ const mag = Math.hypot(ax, ay);
+        if (!TP.aim && -ay > 0.3 && -ay > Math.abs(ax)) TP.aim = true;
+        if (TP.aim){ snapReady = false; if (ay > 0.55) tpEnd(false); else if (mag < 0.22) tpEnd(true, gp);
+          else { const rc = controllers.find(c => c.userData.hand === 'right') || controllers[0]; tpUpdate(rc, THREE.MathUtils.clamp((mag - 0.3) / 0.68, 0, 1), t); } }
+        else if (Math.abs(ax) > 0.6 && snapReady){ snapReady = false; camera.getWorldPosition(tmpV); const ang = -Math.sign(ax) * Math.PI / 6; rig.position.sub(tmpV).applyAxisAngle(THREE.Object3D.DEFAULT_UP, ang).add(tmpV); rig.rotation.y += ang; } if (Math.abs(ax) < 0.3) snapReady = true; } }); }
   if (t - lastScreen > 0.09){ const sc = screenList[screenTurn++ % screenList.length]; sc.draw(sc.g, sc.w, sc.h, t); sc.tex.needsUpdate = true; lastScreen = t; }
   if (t - lastClock > 1){ clockEl.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' · ' + (dayTarget() ? 'day' : 'night') + ' mode'; lastClock = t; }
   Sound.listener(camera); renderer.render(scene, camera);
